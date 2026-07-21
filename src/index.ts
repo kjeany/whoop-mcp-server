@@ -364,6 +364,36 @@ async function main(): Promise<void> {
 			res.json({ status: 'ok', authenticated: Boolean(db.getTokens()) });
 		});
 
+		// JSON data endpoint for the briefing "brain" server to pull Whoop data.
+		// Protected by WHOOP_DATA_KEY (query param ?key=...). No MCP needed.
+		app.get('/data', async (req: Request, res: Response) => {
+			const dataKey = process.env.WHOOP_DATA_KEY ?? '';
+			if (dataKey && req.query.key !== dataKey) {
+				res.status(403).json({ error: 'bad key' });
+				return;
+			}
+			const tokens = db.getTokens();
+			if (!tokens) {
+				res.status(401).json({ error: 'not authenticated with Whoop' });
+				return;
+			}
+			try {
+				client.setTokens(tokens);
+				try { await sync.smartSync(); } catch { /* use cached data */ }
+				res.json({
+					ok: true,
+					recovery: db.getLatestRecovery(),
+					sleep: db.getLatestSleep(),
+					cycle: db.getLatestCycle(),
+					recovery_trends: db.getRecoveryTrends(7),
+					sleep_trends: db.getSleepTrends(7),
+					strain_trends: db.getStrainTrends(7),
+				});
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : 'unknown' });
+			}
+		});
+
 		app.all('/mcp', async (req: Request, res: Response) => {
 			const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
