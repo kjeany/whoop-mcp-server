@@ -379,7 +379,7 @@ async function main(): Promise<void> {
 			}
 			try {
 				client.setTokens(tokens);
-				try { await sync.smartSync(); } catch { /* use cached data */ }
+				try { await sync.quickSync(); } catch { /* use cached data */ }
 				res.json({
 					ok: true,
 					recovery: db.getLatestRecovery(),
