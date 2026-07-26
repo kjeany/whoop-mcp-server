@@ -116,6 +116,12 @@ function ageInHours(isoString: string | null | undefined): number | null {
 	return (Date.now() - parsed) / 3_600_000;
 }
 
+// SQLite writes UTC without a timezone suffix; add one before parsing.
+function sqlUtcToIso(value: string | null | undefined): string | null {
+	if (!value) return null;
+	return value.includes('T') ? value : value.replace(' ', 'T') + 'Z';
+}
+
 function stalenessNote(label: string, isoString: string | null | undefined): string {
 	if (!isoString) return '> Note: the latest ' + label + ' record has no usable timestamp.\n';
 	const age = ageInHours(isoString);
@@ -323,6 +329,23 @@ function createMcpServer(): Server {
 						response += `| ${formatDate(day.date)} | ${day.strain?.toFixed(1) ?? 'N/A'} | ${day.calories ?? 'N/A'} kcal |\n`;
 					}
 
+					// Individual workouts live in their own table. The README promises this,
+					// and nothing was reading it, so the rows were being synced for nothing.
+					const workoutEnd = new Date().toISOString();
+					const workoutStart = new Date(Date.now() - days * 86_400_000).toISOString();
+					const workouts = db.getWorkoutsByDateRange(workoutStart, workoutEnd);
+					if (workouts.length === 0) {
+						response += '\nNo individual workouts recorded in this period.\n';
+					} else {
+						response += '\n## Workouts (' + workouts.length + ')\n\n';
+						response += '| Date | Sport ID | Duration | Strain | Avg HR | Max HR | Calories |\n|------|----------|----------|--------|--------|--------|----------|\n';
+						for (const w of workouts.slice(0, 40)) {
+							const duration = formatDuration(Date.parse(w.end_time) - Date.parse(w.start_time));
+							const calories = w.kilojoule === null ? 'N/A' : Math.round(w.kilojoule / 4.184) + ' kcal';
+							response += '| ' + formatDate(w.start_time) + ' | ' + w.sport_id + ' | ' + duration + ' | ' + (w.strain === null ? 'N/A' : w.strain.toFixed(1)) + ' | ' + (w.avg_hr ?? 'N/A') + ' | ' + (w.max_hr ?? 'N/A') + ' | ' + calories + ' |\n';
+						}
+					}
+
 					const avgStrain = trends.reduce((sum, d) => sum + (d.strain || 0), 0) / trends.length;
 					const avgCalories = trends.reduce((sum, d) => sum + (d.calories || 0), 0) / trends.length;
 
@@ -431,7 +454,20 @@ async function main(): Promise<void> {
 			} catch (error) {
 				tokenError = error instanceof Error ? error.message : String(error);
 			}
+			// One-glance summary: problems is empty when nothing needs attention.
+			const problems: string[] = [];
+			if (!authenticated) problems.push('Not connected to Whoop. Open /auth to reconnect.');
+			if (tokenError) problems.push('Stored token could not be read: ' + tokenError);
+			if (lastSyncError) problems.push('Last sync failed: ' + lastSyncError);
+			if (!syncState.lastSyncAt) problems.push('Never synced yet. Call /data or use an MCP tool once.');
+			const syncAgeHours = ageInHours(sqlUtcToIso(syncState.lastSyncAt));
+			if (syncAgeHours !== null && syncAgeHours > 48) problems.push('Last sync was ' + Math.round(syncAgeHours) + 'h ago.');
+			const recoveryAgeHours = ageInHours(rec?.created_at ?? null);
+			if (recoveryAgeHours !== null && recoveryAgeHours > STALE_AFTER_HOURS) problems.push('Newest recovery record is ' + Math.round(recoveryAgeHours) + 'h old.');
+
 			res.json({
+				ok: problems.length === 0,
+				problems,
 				status: 'ok',
 				authenticated,
 				token_expires_at: tokenExpiresAt,
@@ -502,6 +538,19 @@ async function main(): Promise<void> {
 		});
 
 		app.all('/mcp', async (req: Request, res: Response) => {
+			// Optional gate: set WHOOP_MCP_KEY in Railway to require a key here.
+			// Left unset the endpoint stays open, so the variable is the only switch.
+			const mcpKey = process.env.WHOOP_MCP_KEY ?? '';
+			if (mcpKey) {
+				const bearer = (req.get('authorization') ?? '').replace(/^Bearer /i, '');
+				const queryKey = typeof req.query.key === 'string' ? req.query.key : '';
+				const provided = bearer || req.get('x-whoop-key') || queryKey;
+				if (provided !== mcpKey) {
+					res.status(401).json({ error: 'unauthorized' });
+					return;
+				}
+			}
+
 			const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
 			if (req.method === 'DELETE' && sessionId && transports.has(sessionId)) {
