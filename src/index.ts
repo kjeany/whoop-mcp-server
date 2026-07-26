@@ -36,6 +36,10 @@ if (existingTokens) {
 
 const sync = new WhoopSync(client, db);
 
+// Last sync failure, surfaced on /health. Module scope so the MCP tool path and
+// the /data endpoint both report into the same place.
+let lastSyncError: string | null = null;
+
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const transports = new Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }>();
 
@@ -163,8 +167,10 @@ function createMcpServer(): Server {
 				client.setTokens(tokens);
 				try {
 					await sync.smartSync();
-				} catch {
-					// Continue with cached data
+					lastSyncError = null;
+				} catch (error) {
+					// Continue with cached data, but make the failure visible on /health.
+					lastSyncError = error instanceof Error ? error.message : String(error);
 				}
 			}
 
@@ -343,10 +349,6 @@ async function main(): Promise<void> {
 		const app = express();
 		app.use(express.json());
 
-		// Records the last sync error instead of silently swallowing it, so a
-		// stalled Whoop sync shows up on /health rather than serving stale data quietly.
-		let lastSyncError: string | null = null;
-
 		app.get('/callback', async (req: Request, res: Response) => {
 			const code = req.query.code as string | undefined;
 			if (!code) {
@@ -365,11 +367,28 @@ async function main(): Promise<void> {
 		});
 
 		app.get('/health', (_req: Request, res: Response) => {
-			const cyc = db.getLatestCycle() as any;
+			const cyc = db.getLatestCycle();
+			const rec = db.getLatestRecovery();
+			const syncState = db.getSyncState();
+			let authenticated = false;
+			let tokenExpiresAt: string | null = null;
+			let tokenError: string | null = null;
+			try {
+				const tokens = db.getTokens();
+				authenticated = Boolean(tokens);
+				tokenExpiresAt = tokens ? new Date(tokens.expires_at).toISOString() : null;
+			} catch (error) {
+				tokenError = error instanceof Error ? error.message : String(error);
+			}
 			res.json({
 				status: 'ok',
-				authenticated: Boolean(db.getTokens()),
+				authenticated,
+				token_expires_at: tokenExpiresAt,
+				token_expired: tokenExpiresAt ? Date.parse(tokenExpiresAt) < Date.now() : null,
+				token_error: tokenError,
+				last_sync_at: syncState.lastSyncAt,
 				last_sync_error: lastSyncError,
+				latest_recovery_created_at: rec?.created_at ?? null,
 				latest_cycle_synced_at: cyc?.synced_at ?? null,
 				latest_cycle_start: cyc?.start_time ?? null,
 				latest_cycle_strain: cyc?.strain ?? null,
@@ -384,10 +403,13 @@ async function main(): Promise<void> {
 		});
 
 		// JSON data endpoint for the briefing "brain" server to pull Whoop data.
-		// Protected by WHOOP_DATA_KEY (query param ?key=...). No MCP needed.
+		// Protected by WHOOP_DATA_KEY, sent as an X-Whoop-Key header or ?key=... param.
 		app.get('/data', async (req: Request, res: Response) => {
 			const dataKey = process.env.WHOOP_DATA_KEY ?? '';
-			if (dataKey && req.query.key !== dataKey) {
+			const queryKey = typeof req.query.key === 'string' ? req.query.key : undefined;
+			// Header is preferred: query strings leak into access logs and referrers.
+			const providedKey = req.get('x-whoop-key') ?? queryKey;
+			if (dataKey && providedKey !== dataKey) {
 				res.status(403).json({ error: 'bad key' });
 				return;
 			}
