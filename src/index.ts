@@ -40,6 +40,25 @@ const sync = new WhoopSync(client, db);
 // the /data endpoint both report into the same place.
 let lastSyncError: string | null = null;
 
+// Pending OAuth 'state' values. /auth and get_auth_url mint one; /callback
+// must hand the same one back, so a stranger cannot use our /callback to
+// attach their own Whoop account to this server.
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const pendingOauthStates = new Map<string, number>();
+
+function issueOauthState(): string {
+	const state = crypto.randomUUID();
+	pendingOauthStates.set(state, Date.now() + OAUTH_STATE_TTL_MS);
+	return state;
+}
+
+function consumeOauthState(state: string | undefined): boolean {
+	if (!state) return false;
+	const expiresAt = pendingOauthStates.get(state);
+	pendingOauthStates.delete(state);
+	return expiresAt !== undefined && expiresAt > Date.now();
+}
+
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const transports = new Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }>();
 
@@ -50,6 +69,9 @@ function cleanupStaleSessions(): void {
 			session.transport.close().catch(() => {});
 			transports.delete(sessionId);
 		}
+	}
+	for (const [state, expiresAt] of pendingOauthStates) {
+		if (expiresAt <= now) pendingOauthStates.delete(state);
 	}
 }
 
@@ -81,6 +103,25 @@ function getStrainZone(strain: number): string {
 	if (strain >= 14) return 'High (14-17)';
 	if (strain >= 10) return 'Moderate (10-13)';
 	return 'Light (0-9)';
+}
+
+// Rows are only as fresh as the last successful Whoop sync, so anything older
+// than this must not be presented as "today".
+const STALE_AFTER_HOURS = 36;
+
+function ageInHours(isoString: string | null | undefined): number | null {
+	if (!isoString) return null;
+	const parsed = Date.parse(isoString);
+	if (Number.isNaN(parsed)) return null;
+	return (Date.now() - parsed) / 3_600_000;
+}
+
+function stalenessNote(label: string, isoString: string | null | undefined): string {
+	if (!isoString) return '> Note: the latest ' + label + ' record has no usable timestamp.\n';
+	const age = ageInHours(isoString);
+	if (age === null) return '> Note: the latest ' + label + ' timestamp could not be read.\n';
+	if (age <= STALE_AFTER_HOURS) return '';
+	return '> Note: the latest ' + label + ' record is ' + Math.round(age) + 'h old (' + formatDate(isoString) + '), so it is not from today.\n';
 }
 
 function validateDays(value: unknown): number {
@@ -185,6 +226,8 @@ function createMcpServer(): Server {
 					}
 
 					let response = "# Today's Whoop Summary\n\n";
+					const notes = [recovery ? stalenessNote('recovery', recovery.created_at) : '', cycle ? stalenessNote('cycle', cycle.start_time) : ''].filter(Boolean).join('');
+					if (notes) response += notes + '\n';
 
 					if (recovery) {
 						response += `## Recovery: ${recovery.recovery_score ?? 'N/A'}% ${recovery.recovery_score ? getRecoveryZone(recovery.recovery_score) : ''}\n`;
@@ -318,7 +361,7 @@ function createMcpServer(): Server {
 
 				case 'get_auth_url': {
 					const scopes = ['read:profile', 'read:body_measurement', 'read:cycles', 'read:recovery', 'read:sleep', 'read:workout', 'offline'];
-					const url = client.getAuthorizationUrl(scopes);
+					const url = client.getAuthorizationUrl(scopes, issueOauthState());
 					return {
 						content: [{
 							type: 'text',
@@ -353,6 +396,14 @@ async function main(): Promise<void> {
 			const code = req.query.code as string | undefined;
 			if (!code) {
 				res.status(400).send('Missing authorization code');
+				return;
+			}
+
+			// Only accept callbacks we started ourselves: without this, anyone who
+			// knows the URL could attach their own Whoop account to this server.
+			const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+			if (!consumeOauthState(state)) {
+				res.status(400).send('Invalid or expired state. Start again at /auth.');
 				return;
 			}
 
@@ -399,7 +450,7 @@ async function main(): Promise<void> {
 		// Works even when the MCP connector tools are unavailable.
 		app.get('/auth', (_req: Request, res: Response) => {
 			const scopes = ['read:profile', 'read:body_measurement', 'read:cycles', 'read:recovery', 'read:sleep', 'read:workout', 'offline'];
-			res.redirect(client.getAuthorizationUrl(scopes));
+			res.redirect(client.getAuthorizationUrl(scopes, issueOauthState()));
 		});
 
 		// JSON data endpoint for the briefing "brain" server to pull Whoop data.
@@ -428,9 +479,17 @@ async function main(): Promise<void> {
 				client.setTokens(tokens);
 				try { await sync.quickSync(); lastSyncError = null; }
 				catch (e) { lastSyncError = e instanceof Error ? e.message : String(e); }
+				const latestRecovery = db.getLatestRecovery();
+				const recoveryAgeHours = ageInHours(latestRecovery?.created_at ?? null);
 				res.json({
 					ok: true,
-					recovery: db.getLatestRecovery(),
+					generated_at: new Date().toISOString(),
+					last_sync_at: db.getSyncState().lastSyncAt,
+					last_sync_error: lastSyncError,
+					stale_after_hours: STALE_AFTER_HOURS,
+					recovery_age_hours: recoveryAgeHours === null ? null : Math.round(recoveryAgeHours * 10) / 10,
+					stale: recoveryAgeHours === null || recoveryAgeHours > STALE_AFTER_HOURS,
+					recovery: latestRecovery,
 					sleep: db.getLatestSleep(),
 					cycle: db.getLatestCycle(),
 					recovery_trends: db.getRecoveryTrends(7),
