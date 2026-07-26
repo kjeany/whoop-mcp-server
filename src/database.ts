@@ -318,12 +318,12 @@ export class WhoopDatabase {
 					w.score?.average_heart_rate ?? null,
 					w.score?.max_heart_rate ?? null,
 					w.score?.kilojoule ?? null,
-					w.score?.zone_duration.zone_zero_milli ?? null,
-					w.score?.zone_duration.zone_one_milli ?? null,
-					w.score?.zone_duration.zone_two_milli ?? null,
-					w.score?.zone_duration.zone_three_milli ?? null,
-					w.score?.zone_duration.zone_four_milli ?? null,
-					w.score?.zone_duration.zone_five_milli ?? null
+					w.score?.zone_durations?.zone_zero_milli ?? null,
+					w.score?.zone_durations?.zone_one_milli ?? null,
+					w.score?.zone_durations?.zone_two_milli ?? null,
+					w.score?.zone_durations?.zone_three_milli ?? null,
+					w.score?.zone_durations?.zone_four_milli ?? null,
+					w.score?.zone_durations?.zone_five_milli ?? null
 				);
 			}
 		});
