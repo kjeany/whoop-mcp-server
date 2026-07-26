@@ -564,6 +564,18 @@ async function main(): Promise<void> {
 			if (req.method === 'POST') {
 				let transport: StreamableHTTPServerTransport;
 
+				// Answer 404 for a session we do not know, so the client starts a new one.
+				// This map lives in memory: it is empty after every redeploy and entries
+				// expire after SESSION_TTL_MS. The SDK's default 400 leaves the client
+				// stuck, because only a 404 tells it to reinitialise.
+				const isInitialize = Array.isArray(req.body)
+					? req.body.some((message: { method?: string }) => message?.method === 'initialize')
+					: (req.body as { method?: string } | undefined)?.method === 'initialize';
+				if (!isInitialize && !(sessionId && transports.has(sessionId))) {
+					res.status(404).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Session not found. Reinitialize.' }, id: null });
+					return;
+				}
+
 				if (sessionId && transports.has(sessionId)) {
 					const session = transports.get(sessionId)!;
 					session.lastAccess = Date.now();
