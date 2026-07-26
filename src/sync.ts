@@ -37,15 +37,40 @@ export class WhoopSync {
 			this.client.getAllWorkouts({ start, end }),
 		]);
 
-		if (cycles.length > 0) this.db.upsertCycles(cycles);
-		if (recoveries.length > 0) this.db.upsertRecoveries(recoveries);
-		if (sleeps.length > 0) this.db.upsertSleeps(sleeps);
-		if (workouts.length > 0) this.db.upsertWorkouts(workouts);
+		// Each table is written independently: one bad record set must not
+		// discard the other three, and must not skip updateSyncState() below.
+		const errors: string[] = [];
+		const save = (label: string, write: () => void): void => {
+			try {
+				write();
+			} catch (error) {
+				errors.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		};
 
+		save('cycles', () => {
+			if (cycles.length > 0) this.db.upsertCycles(cycles);
+		});
+		save('recoveries', () => {
+			if (recoveries.length > 0) this.db.upsertRecoveries(recoveries);
+		});
+		save('sleeps', () => {
+			if (sleeps.length > 0) this.db.upsertSleeps(sleeps);
+		});
+		save('workouts', () => {
+			if (workouts.length > 0) this.db.upsertWorkouts(workouts);
+		});
+
+		// Always recorded, even after a partial failure, so the next run can do a
+		// 7-day quick sync instead of falling back to a 90-day full sync forever.
 		this.db.updateSyncState(
 			startDate.toISOString().split('T')[0],
 			endDate.toISOString().split('T')[0]
 		);
+
+		if (errors.length > 0) {
+			throw new Error(`Partial sync: ${errors.join(' | ')}`);
+		}
 
 		return {
 			cycles: cycles.length,
