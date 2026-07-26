@@ -44,13 +44,13 @@ export class WhoopClient {
 		this.tokens = tokens;
 	}
 
-	getAuthorizationUrl(scopes: string[]): string {
+	getAuthorizationUrl(scopes: string[], state = crypto.randomUUID()): string {
 		const params = new URLSearchParams({
 			client_id: this.clientId,
 			redirect_uri: this.redirectUri,
 			response_type: 'code',
 			scope: scopes.join(' '),
-			state: crypto.randomUUID(),
+			state,
 		});
 		return `${WHOOP_AUTH_BASE}/auth?${params}`;
 	}
