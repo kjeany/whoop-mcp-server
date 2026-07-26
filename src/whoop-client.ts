@@ -116,7 +116,7 @@ export class WhoopClient {
 		this.onTokenRefresh?.(this.tokens);
 	}
 
-	private async request<T>(path: string, params?: Record<string, string>): Promise<T> {
+	private async request<T>(path: string, params?: Record<string, string>, allowRetry = true): Promise<T> {
 		if (!this.tokens) {
 			throw new Error('Not authenticated');
 		}
@@ -135,6 +135,13 @@ export class WhoopClient {
 		const response = await fetch(url.toString(), {
 			headers: { Authorization: `Bearer ${this.tokens.access_token}` },
 		});
+
+		// The access token can be rejected before its recorded expiry (revoked, or
+		// rotated elsewhere). Refresh once and replay the request before failing.
+		if (response.status === 401 && allowRetry && this.tokens.refresh_token) {
+			await this.refreshTokens();
+			return this.request<T>(path, params, false);
+		}
 
 		if (!response.ok) {
 			throw new Error(`API request failed: ${response.status} ${await response.text()}`);
