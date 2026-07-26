@@ -13,9 +13,18 @@ interface SmartSyncResult {
 	stats?: SyncStats;
 }
 
+// SQLite CURRENT_TIMESTAMP is UTC but carries no timezone suffix, so passing it
+// straight to new Date() would read it as local time. Normalise before comparing.
+function parseSyncTimestamp(value: string): number {
+	const iso = value.includes('T') ? value : value.replace(' ', 'T') + 'Z';
+	return Date.parse(iso);
+}
+
 export class WhoopSync {
 	private readonly client: WhoopClient;
 	private readonly db: WhoopDatabase;
+	private inFlight: Promise<SyncStats> | null = null;
+	private inFlightDays = 0;
 
 	constructor(client: WhoopClient, db: WhoopDatabase) {
 		this.client = client;
@@ -23,6 +32,23 @@ export class WhoopSync {
 	}
 
 	async syncDays(days = 90): Promise<SyncStats> {
+		// Whoop rate-limits hard and two overlapping syncs would write the same rows
+		// twice. Join a sync already running when it covers at least as many days,
+		// otherwise wait for it to finish before starting the wider one.
+		while (this.inFlight) {
+			if (this.inFlightDays >= days) return this.inFlight;
+			await this.inFlight.catch(() => undefined);
+		}
+
+		this.inFlightDays = days;
+		this.inFlight = this.runSync(days).finally(() => {
+			this.inFlight = null;
+			this.inFlightDays = 0;
+		});
+		return this.inFlight;
+	}
+
+	private async runSync(days: number): Promise<SyncStats> {
 		const endDate = new Date();
 		const startDate = new Date();
 		startDate.setDate(startDate.getDate() - days);
@@ -88,8 +114,10 @@ export class WhoopSync {
 		const state = this.db.getSyncState();
 		if (!state.lastSyncAt) return true;
 
-		const lastSync = new Date(state.lastSyncAt);
-		const hoursSinceSync = (Date.now() - lastSync.getTime()) / (1000 * 60 * 60);
+		const lastSync = parseSyncTimestamp(state.lastSyncAt);
+		if (Number.isNaN(lastSync)) return true;
+
+		const hoursSinceSync = (Date.now() - lastSync) / (1000 * 60 * 60);
 		return hoursSinceSync > 24;
 	}
 
@@ -101,8 +129,13 @@ export class WhoopSync {
 			return { type: 'full', stats };
 		}
 
-		const lastSync = new Date(state.lastSyncAt);
-		const hoursSinceSync = (Date.now() - lastSync.getTime()) / (1000 * 60 * 60);
+		const lastSync = parseSyncTimestamp(state.lastSyncAt);
+		if (Number.isNaN(lastSync)) {
+			const stats = await this.syncDays(90);
+			return { type: 'full', stats };
+		}
+
+		const hoursSinceSync = (Date.now() - lastSync) / (1000 * 60 * 60);
 
 		if (hoursSinceSync < 1) {
 			return { type: 'skip' };
