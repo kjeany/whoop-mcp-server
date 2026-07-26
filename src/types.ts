@@ -99,7 +99,7 @@ export interface WhoopWorkout {
 		max_heart_rate: number;
 		kilojoule: number;
 		percent_recorded: number;
-		zone_duration: {
+		zone_durations?: {
 			zone_zero_milli: number;
 			zone_one_milli: number;
 			zone_two_milli: number;
