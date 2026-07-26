@@ -44,7 +44,7 @@ export class WhoopClient {
 		this.tokens = tokens;
 	}
 
-	getAuthorizationUrl(scopes: string[], state = crypto.randomUUID()): string {
+	getAuthorizationUrl(scopes: string[], state: string = crypto.randomUUID()): string {
 		const params = new URLSearchParams({
 			client_id: this.clientId,
 			redirect_uri: this.redirectUri,
