@@ -409,7 +409,13 @@ async function main(): Promise<void> {
 			const queryKey = typeof req.query.key === 'string' ? req.query.key : undefined;
 			// Header is preferred: query strings leak into access logs and referrers.
 			const providedKey = req.get('x-whoop-key') ?? queryKey;
-			if (dataKey && providedKey !== dataKey) {
+			// Fail closed: with no key configured this endpoint would hand out health
+			// data to anyone who knows the URL, so refuse instead of skipping the check.
+			if (!dataKey) {
+				res.status(503).json({ error: 'WHOOP_DATA_KEY is not configured on the server' });
+				return;
+			}
+			if (providedKey !== dataKey) {
 				res.status(403).json({ error: 'bad key' });
 				return;
 			}
