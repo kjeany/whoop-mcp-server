@@ -370,7 +370,7 @@ export class WhoopDatabase {
 
 	getRecoveryTrends(days: number): RecoveryTrendRow[] {
 		return this.db.prepare(`
-			SELECT DATE(created_at) as date, recovery_score, hrv_rmssd as hrv, resting_hr as rhr
+			SELECT DATE(created_at, '+9 hours') as date, recovery_score, hrv_rmssd as hrv, resting_hr as rhr
 			FROM recovery
 			WHERE recovery_score IS NOT NULL AND created_at >= DATE('now', '-' || ? || ' days')
 			ORDER BY created_at DESC
@@ -379,7 +379,7 @@ export class WhoopDatabase {
 
 	getSleepTrends(days: number): SleepTrendRow[] {
 		return this.db.prepare(`
-			SELECT DATE(start_time) as date,
+			SELECT DATE(start_time, '+9 hours') as date,
 				ROUND((total_in_bed_milli - total_awake_milli) / 3600000.0, 2) as total_sleep_hours,
 				sleep_performance as performance, sleep_efficiency as efficiency
 			FROM sleep
@@ -390,7 +390,7 @@ export class WhoopDatabase {
 
 	getStrainTrends(days: number): StrainTrendRow[] {
 		return this.db.prepare(`
-			SELECT DATE(start_time) as date, strain, ROUND(kilojoule / 4.184, 0) as calories
+			SELECT DATE(start_time, '+9 hours') as date, strain, ROUND(kilojoule / 4.184, 0) as calories
 			FROM cycles
 			WHERE strain IS NOT NULL AND start_time >= DATE('now', '-' || ? || ' days')
 			ORDER BY start_time DESC
