@@ -86,6 +86,7 @@ function formatDuration(millis: number | null): string {
 
 function formatDate(isoString: string): string {
 	return new Date(isoString).toLocaleDateString('en-US', {
+		timeZone: 'UTC',
 		weekday: 'short',
 		month: 'short',
 		day: 'numeric',
